@@ -38,13 +38,22 @@ hiddenimports = [
     # APScheduler 定时同步
     "apscheduler.schedulers.background",
     "apscheduler.triggers.interval",
+    # 系统托盘：pystray 按平台动态选择后端，Windows 用 _win32
+    "pystray",
+    "pystray._base",
+    "pystray._util",
+    "pystray._win32",
 ]
 
 a = Analysis(
     ["desktop.py"],
     pathex=[str(ROOT), str(ROOT / "backend")],
     binaries=[],
-    datas=[(str(ROOT / "backend" / "static"), "backend/static")],
+    datas=[
+        (str(ROOT / "backend" / "static"), "backend/static"),
+        # 托盘图标运行时从 assets/ 读取
+        (str(ROOT / "assets"), "assets"),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -52,6 +61,7 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
 
 pyz = PYZ(a.pure)
 

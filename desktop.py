@@ -55,9 +55,16 @@ import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 
 from app.config import settings  # noqa: E402
+from app.core.desktop_prefs import CLOSE_ACTION_TRAY, load_prefs  # noqa: E402
 from app.main import app  # noqa: E402
 
 WINDOW_TITLE = "多邮箱聚合摘要工具"
+
+# 桌面端运行态：托盘图标与「关闭窗口」行为共享。
+_exiting = False          # 用户在托盘菜单点了「退出」→ 之后允许窗口真正关闭
+_tray_icon = None         # pystray.Icon 实例，退出时用它 stop()
+_tray_lock = threading.Lock()
+
 
 
 def _find_free_port(preferred: int) -> int:
@@ -131,11 +138,109 @@ def run_selftest(port: int) -> int:
     return 0 if ok else 1
 
 
+def _icon_path() -> Path | None:
+    """托盘图标路径：打包后位于 _MEIPASS/assets，源码运行取仓库 assets/。"""
+    base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    candidate = base / "assets" / "icon.ico"
+    return candidate if candidate.exists() else None
+
+
+def _tray_image():
+    """托盘图标：优先复用应用图标，缺失时用 PIL 画一个圆点兜底。"""
+    from PIL import Image, ImageDraw
+
+    path = _icon_path()
+    if path is not None:
+        try:
+            return Image.open(path)
+        except OSError:
+            pass
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    ImageDraw.Draw(image).ellipse((4, 4, 60, 60), fill=(15, 220, 120, 255))
+    return image
+
+
+def _show_window(window) -> None:
+    """托盘菜单「显示主窗口」：把隐藏/最小化的窗口重新显示出来。"""
+    window.show()
+    try:
+        window.restore()
+    except Exception:  # noqa: BLE001 - 未最小化时 restore 会报错，忽略即可
+        pass
+
+
+def _stop_tray() -> None:
+    with _tray_lock:
+        icon = _tray_icon
+    if icon is not None:
+        try:
+            icon.stop()
+        except Exception:  # noqa: BLE001 - 托盘已退出时重复 stop 无副作用
+            pass
+
+
+def _quit_from_tray(window) -> None:
+    """托盘菜单「退出」：解除关闭拦截 → 停托盘 → 销毁窗口，让 start() 返回。"""
+    global _exiting
+    _exiting = True
+    _stop_tray()
+    window.destroy()
+
+
+def _start_tray(window) -> None:
+    """在 GUI 循环启动后于独立线程运行系统托盘图标。
+
+    托盘常驻（无论关闭行为是退出还是隐藏），提供「显示主窗口 / 退出」两个菜单项；
+    pystray 缺失或创建失败时仅打印日志并继续，不影响主窗口正常使用。
+    """
+    global _tray_icon
+    try:
+        import pystray
+        from pystray import Menu, MenuItem
+    except Exception as exc:  # noqa: BLE001 - 托盘不可用不应导致程序无法启动
+        print(f"[DESKTOP] 托盘不可用，已跳过：{exc}", file=sys.stderr)
+        return
+
+    menu = Menu(
+        MenuItem("显示主窗口", lambda *_: _show_window(window), default=True),
+        MenuItem("退出", lambda *_: _quit_from_tray(window)),
+    )
+    try:
+        icon = pystray.Icon("MailSummary", _tray_image(), WINDOW_TITLE, menu)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[DESKTOP] 创建托盘图标失败：{exc}", file=sys.stderr)
+        return
+
+    with _tray_lock:
+        _tray_icon = icon
+    try:
+        icon.run()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[DESKTOP] 托盘运行异常：{exc}", file=sys.stderr)
+
+
+def _on_closing(window) -> bool:
+    """窗口关闭事件处理：返回 False 表示拦截关闭。
+
+    偏好为「隐藏到托盘」（tray）时隐藏窗口并在后台继续同步邮件；否则放行，
+    让 ``webview.start`` 返回、进程正常退出。托盘菜单「退出」会把 _exiting
+    置真，从而绕过这里的拦截。
+    """
+    if _exiting:
+        return True
+    if load_prefs().close_action == CLOSE_ACTION_TRAY:
+        window.hide()
+        print("[DESKTOP] 窗口已隐藏到托盘，程序在后台继续运行")
+        return False
+    return True
+
+
 def run_desktop(port: int) -> None:
     """启动服务并打开原生窗口（阻塞直到窗口关闭）。"""
     import webview
 
     settings.app_public_base_url = f"http://127.0.0.1:{port}"
+    settings.desktop_mode = True  # 让前端展示「桌面端」设置分区
     thread = _start_server(port)
     url = f"http://127.0.0.1:{port}"
     if not _wait_ready(f"{url}/api/health"):
@@ -143,17 +248,21 @@ def run_desktop(port: int) -> None:
 
     # text_select=True：pywebview 默认禁用页面文本选择，会导致邮件详情里的正文
     # 无法选中/复制；打开后正文可选中复制（页面无 contenteditable，故不可编辑）。
-    webview.create_window(
+    window = webview.create_window(
         WINDOW_TITLE, url, width=1280, height=860, min_size=(900, 600), text_select=True
     )
+    window.events.closing += _on_closing
     # private_mode=False + storage_path：否则 pywebview 会给 WebView2 一个临时
     # 用户数据目录，窗口一关 localStorage 就清空，主题/字号/侧栏折叠等偏好每次
     # 重启都回到默认值。这里固定到系统用户目录，与打包产物解耦。
     storage = settings.data_dir / "webview"
     storage.mkdir(parents=True, exist_ok=True)
     try:
-        webview.start(private_mode=False, storage_path=str(storage))
+        # 托盘在 GUI 循环启动后于独立线程运行：关闭窗口若命中「隐藏到托盘」，
+        # 窗口会藏起来，靠托盘菜单重新显示或彻底退出。
+        webview.start(_start_tray, (window,), private_mode=False, storage_path=str(storage))
     finally:
+        _stop_tray()
         thread.stop()
 
 

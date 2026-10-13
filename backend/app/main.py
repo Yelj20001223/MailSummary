@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 
 from app import __version__
-from app.api import accounts, companies, messages, oauth, rules, summaries, sync
+from app.api import accounts, companies, desktop, messages, oauth, rules, summaries, sync
 from app.config import settings
 from app.core.logging import logger, setup_logging
 from app.db.session import engine, init_db
@@ -96,6 +96,7 @@ app.include_router(rules.router)
 app.include_router(rules.classify_router)
 app.include_router(companies.router)
 app.include_router(summaries.router)
+app.include_router(desktop.router)
 
 
 @app.get("/api/health")

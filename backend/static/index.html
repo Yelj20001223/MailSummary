@@ -245,6 +245,18 @@
           <p class="hint">未配置或调用失败时自动降级为规则摘要，功能始终可用；Key 加密存储。</p>
         </div>
 
+        <div id="desktop-section" class="settings-section hidden">
+          <div class="settings-title">桌面端</div>
+          <label class="chk"><input type="checkbox" id="desktop-autostart" /> 开机自动启动</label>
+          <label>点击关闭按钮时
+            <select id="desktop-close-action">
+              <option value="exit">直接退出程序</option>
+              <option value="tray">隐藏到系统托盘（后台继续收信）</option>
+            </select>
+          </label>
+          <p class="hint">「隐藏到托盘」后程序仍在后台同步邮件，右键托盘图标可重新显示窗口或退出。</p>
+        </div>
+
         <div id="summary-msg" class="form-msg"></div>
         <div class="modal-actions">
           <button id="summary-save" class="btn btn-primary">保存</button>

@@ -3,3 +3,6 @@
 pywebview>=5.0
 # 打包为 Windows 可执行文件
 pyinstaller>=6.0
+# 系统托盘（关闭窗口时「隐藏到托盘」；pystray 依赖 Pillow 生成/加载托盘图标）
+pystray>=0.19.5
+Pillow>=10.0.0

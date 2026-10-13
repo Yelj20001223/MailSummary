@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
     log_level: str = "INFO"
+    # 是否由桌面端启动（desktop.py 在启动服务前置为 True）。
+    # 仅用于让前端决定是否展示「桌面端」设置分区，不影响核心逻辑。
+    desktop_mode: bool = False
 
     # ---------- 存储 ----------
     data_dir: Path = Path("data")

@@ -35,6 +35,7 @@ const state = {
   companyId: null,      // 选中公司
   companyDetail: null,  // 公司详情
   llmConfig: null,      // 摘要 LLM 配置（P4）
+  desktopConfig: null,  // 桌面端设置：开机自启 / 关闭窗口行为
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -906,6 +907,27 @@ async function loadLlmConfig() {
   }
 }
 
+async function loadDesktopConfig() {
+  try {
+    state.desktopConfig = await api('/api/desktop/config');
+  } catch (e) {
+    state.desktopConfig = { desktop: false };
+  }
+}
+
+/* 桌面端分区只在桌面端运行（desktop.py）时展示，网页端隐藏。 */
+function renderDesktopCfg() {
+  const cfg = state.desktopConfig || { desktop: false };
+  const section = document.getElementById('desktop-section');
+  if (!section) return;
+  section.classList.toggle('hidden', !cfg.desktop);
+  if (!cfg.desktop) return;
+  const autoStart = document.getElementById('desktop-autostart');
+  autoStart.checked = !!cfg.auto_start;
+  autoStart.disabled = !cfg.auto_start_supported;
+  document.getElementById('desktop-close-action').value = cfg.close_action || 'exit';
+}
+
 function summaryMsg(text, ok) {
   const el = document.getElementById('summary-msg');
   el.textContent = text;
@@ -925,6 +947,8 @@ async function openSummaryCfg() {
     keyEl.placeholder = cfg.has_api_key ? `已保存（${cfg.api_key_masked}），留空保持不变` : '留空不设置';
     document.getElementById('llm-maxchars').value = cfg.max_chars || 4000;
     document.getElementById('llm-timeout').value = cfg.timeout || 30;
+    await loadDesktopConfig();
+    renderDesktopCfg();
     summaryMsg('', true);
     document.getElementById('summary-modal').classList.remove('hidden');
   } catch (e) {
@@ -945,8 +969,20 @@ async function saveSummaryCfg() {
   if (key) payload.api_key = key;
   try {
     state.llmConfig = await api('/api/summaries/config', { method: 'PUT', body: JSON.stringify(payload) });
+    if (state.desktopConfig && state.desktopConfig.desktop) {
+      // 开机自启只在 Windows 可用；不支持时不提交，避免后端报错。
+      const dpayload = { close_action: document.getElementById('desktop-close-action').value };
+      if (state.desktopConfig.auto_start_supported) {
+        dpayload.auto_start = document.getElementById('desktop-autostart').checked;
+      }
+      state.desktopConfig = await api('/api/desktop/config', {
+        method: 'PUT',
+        body: JSON.stringify(dpayload),
+      });
+      renderDesktopCfg();
+    }
     summaryMsg('已保存', true);
-    toast('摘要设置已保存');
+    toast('设置已保存');
   } catch (e) {
     summaryMsg(`保存失败：${e.message}`, false);
   }
