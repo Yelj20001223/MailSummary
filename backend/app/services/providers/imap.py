@@ -42,6 +42,8 @@ _FLAGS_RE = re.compile(rb"FLAGS\s+\((?P<flags>[^)]*)\)", re.S)
 _BATCH_UID = 50  # 单次 FETCH 的 UID 数量（网络层分批，避免超长命令行）
 # 定位垃圾邮件夹的关键字（各服务商夹名不一，按关键字匹配）
 _JUNK_HINTS = ("junk", "spam", "垃圾")
+# 已打印过文件夹列表的账号（进程内只打印一次，避免每 30 秒刷屏）
+_LOGGED_FOLDER_ACCOUNTS: set[str] = set()
 
 
 def _decode_bytes(payload: bytes, charset: str | None) -> str:
@@ -196,10 +198,18 @@ class ImapProvider(MailProvider):
             return self._junk_folder
         self._junk_scanned = True
         try:
-            for f in self.list_folders():
-                if any(h in f.name.lower() for h in _JUNK_HINTS):
-                    self._junk_folder = f.name
-                    logger.info(f"[IMAP] {self.account.email} 垃圾邮件夹：{f.name}")
+            names = [f.name for f in self.list_folders()]
+            # 打印完整文件夹列表：QQ 等会把被过滤的邮件（广告/订阅）放进独立夹，
+            # 若不在同步目标里就永远收不到，这里留痕便于确认（每账号仅一次）。
+            first_time = self.account.email not in _LOGGED_FOLDER_ACCOUNTS
+            if first_time:
+                logger.info(f"[IMAP] {self.account.email} 文件夹列表：{names}")
+                _LOGGED_FOLDER_ACCOUNTS.add(self.account.email)
+            for name in names:
+                if any(h in name.lower() for h in _JUNK_HINTS):
+                    self._junk_folder = name
+                    if first_time:
+                        logger.info(f"[IMAP] {self.account.email} 垃圾邮件夹：{name}")
                     break
         except Exception as exc:  # noqa: BLE001 - 定位失败不影响收件箱同步
             logger.warning(f"[IMAP] {self.account.email} 定位垃圾邮件夹失败（已跳过）：{exc}")
@@ -269,6 +279,24 @@ class ImapProvider(MailProvider):
     ) -> Iterator[RawMessage]:
         uidvalidity, _exists = self._select(folder)
         uids = self._search_uids(start_uid=start_uid, since=since)
+        # 防御与自愈：部分服务器（QQ）对 `UID SEARCH n:*` 处理不佳，会返回空，
+        # 导致「明明有新邮件却待拉取=0」。增量为空时用全量搜索复核真实最大 UID，
+        # 若确实存在 ≥start_uid 的邮件则改用复核结果，避免永久漏收。
+        if start_uid is not None and not uids:
+            all_uids = self._search_uids(start_uid=None, since=None)
+            max_all = all_uids[-1] if all_uids else 0
+            if max_all >= start_uid:
+                uids = [u for u in all_uids if u >= start_uid]
+                logger.warning(
+                    f"[IMAP] {self.account.email} {folder} 增量搜索返回空，"
+                    f"全量复核发现 UID≥{start_uid} 共 {len(uids)} 封（最大 {max_all}），"
+                    "改用复核结果补拉"
+                )
+            else:
+                logger.debug(
+                    f"[IMAP] {self.account.email} {folder} 全量复核：最大 UID={max_all}，"
+                    f"（start_uid={start_uid}）确无新邮件"
+                )
         if limit is not None:
             uids = uids[:limit]
         logger.info(

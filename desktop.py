@@ -266,11 +266,58 @@ def run_desktop(port: int) -> None:
         thread.stop()
 
 
+# 单实例互斥体句柄：必须持有到进程退出，提前释放会让锁失效。
+_single_instance_handle = None
+_SINGLETON_MUTEX = "MailSummary_SingleInstance_Mutex"
+
+
+def _acquire_single_instance() -> bool:
+    """用命名互斥体保证同一时间只运行一个桌面端实例。
+
+    返回 True 表示本进程拿到锁；False 表示已有实例在运行。
+    """
+    import ctypes
+
+    global _single_instance_handle
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+    handle = kernel32.CreateMutexW(None, 0, _SINGLETON_MUTEX)
+    if not handle:
+        return True  # 互斥体创建失败时不阻塞启动
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+    _single_instance_handle = handle
+    return True
+
+
+def _focus_existing_window() -> None:
+    """按窗口标题把已在运行的实例唤到前台（无需进程间通信）。"""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+    if not hwnd:
+        return
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE：最小化/隐藏到托盘时还原
+    user32.SetForegroundWindow(hwnd)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="多邮箱聚合摘要工具 · 桌面端")
     parser.add_argument("--port", type=int, default=settings.app_port, help="服务端口（默认取配置）")
     parser.add_argument("--selftest", action="store_true", help="启动服务并自检后退出（不打开窗口）")
     args = parser.parse_args()
+
+    # 单实例：已有实例在运行时，把它的窗口唤到前台后本进程直接退出，
+    # 避免开出两个窗口、两份服务争抢端口与数据库。
+    if not _acquire_single_instance():
+        _focus_existing_window()
+        print("[DESKTOP] 检测到已有实例在运行，已将其窗口置于前台；本进程退出")
+        raise SystemExit(0)
 
     port = _find_free_port(args.port)
     if port != args.port:
