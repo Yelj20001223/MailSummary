@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 本地数据（数据库 / 邮件原文 / 密钥）
+data/
+*.db
+*.sqlite3
+.secret_key
+
+# 环境变量（可能含密钥）
+.env
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 打包（P6：PyInstaller 产物，spec 保留在版本库）
+build/
+dist/
+# 根目录下的单文件桌面启动程序
+/MailSummary.exe

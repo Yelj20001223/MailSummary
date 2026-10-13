@@ -1,0 +1,5 @@
+# --- P6 桌面端与打包（在 requirements.txt 之外单独安装，避免污染纯 Web 依赖）---
+# 原生窗口（Windows 使用系统自带的 WebView2 / Edge Chromium）
+pywebview>=5.0
+# 打包为 Windows 可执行文件
+pyinstaller>=6.0
