@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,7 +54,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info(f"邮件聚合摘要工具 v{__version__} 启动，数据目录：{settings.data_dir}")
 
     if settings.sync_interval_seconds > 0:
-        # 启动后立即同步一次，随后按间隔轮询（秒级），收件箱与垃圾邮件都会覆盖
+        # 启动后立即同步一次，随后按间隔轮询（秒级），收件箱与垃圾邮件都会覆盖。
+        # 必须用带时区的 UTC 时间：调度器时区为 UTC，传 naive 的 datetime.now()
+        # 会被 APScheduler 当作 UTC 处理，本地时区(如 UTC+8)下首次同步将被推迟 8 小时。
         scheduler.add_job(
             _scheduled_sync,
             "interval",
@@ -62,7 +64,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             id="periodic_sync",
             replace_existing=True,
             max_instances=1,
-            next_run_time=datetime.now(),
+            next_run_time=datetime.now(timezone.utc),
         )
         scheduler.start()
         logger.info(f"定时同步已启用：启动后立即同步，之后每 {settings.sync_interval_seconds} 秒")

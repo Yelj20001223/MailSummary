@@ -462,11 +462,37 @@ function renderList() {
   if (more) more.onclick = loadMore;
 }
 
+/* 点开邮件即标记已读：仅更新本地库与侧栏未读数，失败静默忽略。 */
+async function markReadLocal(id) {
+  try {
+    await api('/api/messages/actions/read', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [id], value: true }),
+    });
+    await loadAccounts();
+  } catch (e) { /* 标记已读失败不影响阅读 */ }
+}
+
 async function openDetail(id) {
   state.activeMessageId = id;
   expandDetail();
   renderList();
+
+  // 点开邮件即视为已读：先在本地立即清掉未读样式（否则要等「一键已读」才变），
+  // 再落库并刷新未读数；仅更新本地库，不回写邮箱服务器。
+  const local = state.messages.find((x) => x.id === id);
+  let marked = false;
+  if (local && !local.is_read) {
+    local.is_read = true;
+    state.unreadTotal = Math.max(0, state.unreadTotal - 1);
+    renderList();
+    marked = true;
+    markReadLocal(id);
+  }
+
   const m = await api(`/api/messages/${id}`);
+  // 摘要 / 公司视图里打开的邮件不在当前列表，用详情里的 is_read 兜底
+  if (!marked && !m.is_read) markReadLocal(id);
   let summaryHtml = '';
   try {
     const s = await api(`/api/summaries/${id}`);

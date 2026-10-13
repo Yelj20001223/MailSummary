@@ -35,7 +35,10 @@ imaplib.Commands["ID"] = ("AUTH", "SELECTED")
 
 _CHARSET_FALLBACKS = ("utf-8", "gb18030", "gbk", "big5", "latin-1")
 _LIST_RE = re.compile(rb'\((?P<flags>[^)]*)\)\s+"(?P<delim>[^"]*)"\s+(?P<name>.+)$')
-_FETCH_META_RE = re.compile(rb"UID\s+(?P<uid>\d+).*?FLAGS\s+\((?P<flags>[^)]*)\)", re.S)
+# FETCH 响应里 UID 与 FLAGS 分开匹配：带 RFC822 字面量时，imaplib 会把字面量
+# 之后的尾巴（如 FLAGS）拆成独立片段，两者不一定落在同一段 meta 里。
+_UID_RE = re.compile(rb"UID\s+(?P<uid>\d+)")
+_FLAGS_RE = re.compile(rb"FLAGS\s+\((?P<flags>[^)]*)\)", re.S)
 _BATCH_UID = 50  # 单次 FETCH 的 UID 数量（网络层分批，避免超长命令行）
 # 定位垃圾邮件夹的关键字（各服务商夹名不一，按关键字匹配）
 _JUNK_HINTS = ("junk", "spam", "垃圾")
@@ -289,23 +292,36 @@ class ImapProvider(MailProvider):
         if typ != "OK":
             raise ProviderError(f"FETCH 失败：{typ}")
 
-        for item in data or []:
-            if not isinstance(item, tuple) or len(item) < 2:
-                continue
-            meta, raw = item[0], item[1]
-            if not isinstance(raw, bytes):
-                continue
-            try:
-                yield self._parse_message(meta, raw)
-            except Exception as exc:  # noqa: BLE001 - 单封解析失败不应中断整批
-                logger.warning(f"[IMAP] 解析邮件失败（已跳过）：{exc}")
+        # imaplib 对含 RFC822 字面量的 FETCH 响应，会把字面量之后的尾巴（FLAGS 等）
+        # 拆成 data 列表里紧随其后的独立 bytes 片段。必须把它拼回 meta 一起解析，
+        # 否则 UID/FLAGS 会解析失败（UID 落成 0，增量游标永远停在 0）。
+        items = data or []
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if isinstance(item, tuple) and len(item) >= 2:
+                raw = item[1]
+                if isinstance(raw, bytes):
+                    meta = item[0] if isinstance(item[0], bytes) else b""
+                    tail = b""
+                    if i + 1 < len(items) and isinstance(items[i + 1], bytes):
+                        tail = items[i + 1]
+                    try:
+                        yield self._parse_message(meta + b" " + tail, raw)
+                    except Exception as exc:  # noqa: BLE001 - 单封解析失败不应中断整批
+                        logger.warning(f"[IMAP] 解析邮件失败（已跳过）：{exc}")
+                    i += 2 if tail else 1
+                    continue
+            i += 1
 
     # --------------------------- 邮件解析 ---------------------------
     @staticmethod
     def _parse_message(meta: bytes, raw: bytes) -> RawMessage:
-        m = _FETCH_META_RE.search(meta or b"")
-        uid = int(m.group("uid")) if m else 0
-        flags_raw = m.group("flags").decode("utf-8", errors="replace") if m else ""
+        meta = meta or b""
+        uid_m = _UID_RE.search(meta)
+        uid = int(uid_m.group("uid")) if uid_m else 0
+        flags_m = _FLAGS_RE.search(meta)
+        flags_raw = flags_m.group("flags").decode("utf-8", errors="replace") if flags_m else ""
         flags = flags_raw.split()
 
         msg = BytesParser(policy=policy.default).parsebytes(raw)
